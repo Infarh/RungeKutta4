@@ -1,27 +1,32 @@
-﻿using OxyPlot;
+﻿using System.Data;
+using System.Diagnostics;
+
+using OxyPlot;
 using OxyPlot.Axes;
 using OxyPlot.ImageSharp;
 using OxyPlot.Legends;
 using OxyPlot.Series;
+
 using RungeKutta4;
+
 using static System.Math;
 
 const double dt = 0.001;
 
 const double tau1 = 1;
 const double tau2 = 4;
-const double t1   = tau1 / 2;
-const double t2   = 6;
+const double t1 = tau1 / 2;
+const double t2 = 6;
+var tt = Stopwatch.StartNew();
 
 var (x0, v0) = (0d, 0d);
-var X0 = new[] { x0, v0 };
 
-var YY = RungeKutta4(dX, 0, 10, dt, X0);
+var YY = RungeKutta4(dX, 0, 10, dt, new State(x0, v0), 1e-5);
 
 var model = new PlotModel
 {
     Title = "System dynamics",
-    Background              = OxyColors.White,
+    Background = OxyColors.White,
     PlotAreaBorderThickness = new(0, 1, 0, 0),
     PlotMargins = new OxyThickness(double.NaN).WithTop(-20),
     Axes =
@@ -88,8 +93,8 @@ var model = new PlotModel
     {
         new LineSeries
         {
-            Title = "Ускорение",
-            ItemsSource = YY.Select((y, i) => new { X = i * dt, Y = F(i * dt) }),
+            Title       = "Ускорение",
+            ItemsSource = YY.Select(y => new { X = y.Time, Y = F(y.Time) }),
             DataFieldX  = "X",
             DataFieldY  = "Y",
             Color       = OxyColors.Red,
@@ -97,8 +102,8 @@ var model = new PlotModel
         },
         new LineSeries
         {
-            Title = "Скорость",
-            ItemsSource = YY.Select((y, i) => new { X = i * dt, Y = y[1] }),
+            Title       = "Скорость",
+            ItemsSource = YY.Select(y => new { X = y.Time, Y = y.Value.V }),
             DataFieldX  = "X",
             DataFieldY  = "Y",
             Color       = OxyColors.Blue,
@@ -107,7 +112,7 @@ var model = new PlotModel
         new LineSeries
         {
             Title       = "Перемещение",
-            ItemsSource = YY.Select((y, i) => new { X = i * dt, Y = y[0] }),
+            ItemsSource = YY.Select(y => new { X = y.Time, Y = y.Value.X }),
             DataFieldX  = "X",
             DataFieldY  = "Y",
             Color       = OxyColors.Black,
@@ -118,9 +123,9 @@ var model = new PlotModel
     {
         new Legend
         {
-            LegendPosition = LegendPosition.RightTop,
-            LegendBackground = OxyColors.White.Opacity(0.6),
-            LegendBorder = OxyColors.Blue,
+            LegendPosition        = LegendPosition.RightTop,
+            LegendBackground      = OxyColors.White.Opacity(0.6),
+            LegendBorder          = OxyColors.Blue,
             LegendBorderThickness = 2
         }
     },
@@ -138,53 +143,71 @@ static double Gauss(double x, double sgm) => Exp(-Pow2(x / sgm) / 2) / (sgm * Sq
 
 static double F(double x) => Gauss(x - t1, tau1 / 6d) - Gauss(x - t2, tau2 / 6d);
 
-static double[] dXa(double[] X, double a) => new[]
+static State dX(double t, State X)
 {
-    X[1] + a * dt,
-    a
-};
-
-static double[] dX(double t, double[] X) => dXa(X, F(t));
-
-static double[] Add(double[] X, double[] Y)
-{
-    var Z = new double[X.Length];
-    for (var i = 0; i < X.Length; i++)
-        Z[i] = X[i] + Y[i];
-    return Z;
+    var a = F(t);
+    return new(X.V + a * dt, a);
 }
 
-static double[] Add4(double[] X1, double[] X2, double[] X3, double[] X4)
+static (double Time, T Value)[] RungeKutta4<T>(
+    Func<double, T, T> f,
+    double t1,
+    double t2,
+    double dt0,
+    T X0,
+    double eps = 1e-5)
+    where T : IComputable<T>
 {
-    var Y = new double[X1.Length];
-    for (var i = 0; i < X1.Length; i++)
-        Y[i] = X1[i] + 2 * X2[i] + 2 * X3[i] + X4[i];
-    return Y;
-}
-
-static double[] Mul(double[] X, double y)
-{
-    var Z = new double[X.Length];
-    for (var i = 0; i < X.Length; i++)
-        Z[i] = X[i] * y;
-    return Z;
-}
-
-static double[][] RungeKutta4(Func<double, double[], double[]> f, double t1, double t2, double dt, double[] X0)
-{
-    var Y  = X0;
-    var YY = new List<double[]>((int)((t2 - t1) / dt) + 1);
-    for (var t = t1; t <= t2; t += dt)
+    var dt = dt0;
+    var Y = X0;
+    var YY = new List<(double, T)>((int)((t2 - t1) / dt0) + 1);
+    var t = t1;
+    var dY_last = default(T);
+    while (t <= t2)
     {
-        var k1 = f(t + 0.0 * dt, Y);
-        var k2 = f(t + 0.5 * dt, Add(Y, Mul(k1, dt / 2)));
-        var k3 = f(t + 0.5 * dt, Add(Y, Mul(k2, dt / 2)));
-        var k4 = f(t + 1.0 * dt, Add(Y, Mul(k3, dt)));
+        var k1 = f(t, Y);
 
-        Y = Add(Y, Mul(Add4(k1, k2, k3, k4), dt / 6));
+        var dY0 = RungeKutta4Step(f, t, Y, k1, dt);
 
-        YY.Add(Y);
+        if (dY_last != default)
+        {
+            var dY1 = RungeKutta4Step(f, t, Y, k1, dt * 2);
+
+            if (dY1 - dY_last < eps)
+            {
+                Console.WriteLine("t:{0,-20} | dt:{1,-20} ->   2dt:{2}", t, dt, dt * 2);
+                dt *= 2;
+                (dY0, dY1) = (dY1, RungeKutta4Step(f, t, Y, k1, dt * 2));
+            }
+            else
+            {
+                dY1 = RungeKutta4Step(f, t, Y, k1, dt / 2);
+                while (dY0 - dY1 > eps)
+                {
+                    Console.WriteLine("t:{0,-20} | dt:{1,-20} -> 0.5dt:{2}", t, dt, dt / 2);
+                    dt /= 2;
+                    dY0 = RungeKutta4Step(f, t, Y, k1, dt);
+                }
+            }
+        }
+
+        dY_last = dY0;
+        Y += dY0;
+        t += dt;
+        YY.Add((t, Y));
     }
 
     return YY.ToArray();
+}
+
+static T RungeKutta4Step<T>(Func<double, T, T> f, double t, T Y, T k1, double dt)
+    where T : IComputable<T>
+{
+    var k2 = f(t + 0.5 * dt, Y + dt / 2 * k1);
+    var k3 = f(t + 0.5 * dt, Y + dt / 2 * k2);
+    var k4 = f(t + 1.0 * dt, Y + dt * k3);
+
+    var dY = dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4);
+
+    return dY;
 }
