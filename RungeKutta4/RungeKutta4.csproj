@@ -9,6 +9,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Using Include="RungeKutta4" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="OxyPlot.ImageSharp" Version="2.1.0" />
   </ItemGroup>
 
